@@ -5,9 +5,11 @@ from sheets import (get_all_rows, append_row, update_cell,
                     get_weekly_rows, update_weekly_cell, reset_weekly_tracker)
 from apscheduler.schedulers.background import BackgroundScheduler
 import os, pytz
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 sessions = {}
+task_reminders = []  # list of {time: datetime, number: str, task_name: str}
 
 # ── Twilio outbound config ────────────────────────────────────────────────────
 TWILIO_SID   = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -37,9 +39,20 @@ _Your Amazon task tracker, right here on WhatsApp._
 👤 *list haris*  _or_  *list abdullah*
    Filter tasks by owner
 
+⚡ *list high*  _or_  *list medium*
+   Filter tasks by priority
+
 🔎 *view <number>*
    See full details of a task
    _e.g. view 5_
+
+✅ *done <number>*
+   Quickly mark a task as done
+   _e.g. done 3_
+
+⏰ *remind*
+   Set a reminder for a specific task
+   _Guided flow_
 
 🔍 *search <keyword>*
    Filter tasks by any word
@@ -128,10 +141,28 @@ def weekly_reset():
         print("[weekly_reset] Failed to reset tracker")
 
 
+def fire_task_reminders():
+    """Check every minute for due task reminders and send them."""
+    now = datetime.now(pytz.timezone("Asia/Kolkata")).replace(second=0, microsecond=0)
+    due = [r for r in task_reminders if r["time"] <= now]
+    for r in due:
+        try:
+            client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
+            client.messages.create(
+                from_=TWILIO_FROM,
+                to=r["number"],
+                body=f"⏰ *Task Reminder!*\n━━━━━━━━━━━━━━━━━━\n📝 {r['task_name']}\n\n_This is your scheduled reminder._"
+            )
+            task_reminders.remove(r)
+        except Exception as e:
+            print(f"[remind] Error: {e}")
+
+
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 scheduler.add_job(daily_summary, "cron", hour=9, minute=0)
 scheduler.add_job(weekly_reset, "cron", day_of_week="mon", hour=8, minute=0)
+scheduler.add_job(fire_task_reminders, "interval", minutes=1)
 scheduler.start()
 
 
@@ -194,13 +225,22 @@ def handle_message(text, sender, session, state):
                 owner_filter = parts[1].lower()
                 page         = int(parts[2])
 
-            # Apply owner filter if given
+            # Apply owner OR priority filter if given
+            PRIORITIES = ("high", "medium", "low")
             if owner_filter:
-                filtered = [rows[0]] + [r for r in rows[1:] if len(r) > 4 and owner_filter in r[4].lower()]
-                if len(filtered) <= 1:
-                    return f"👤 No tasks found for owner matching *'{owner_filter}'*."
+                if owner_filter in PRIORITIES:
+                    filtered = [rows[0]] + [r for r in rows[1:] if len(r) > 3 and r[3].lower() == owner_filter]
+                    label = owner_filter.title()
+                    icon  = P_ICON.get(owner_filter, "")
+                    if len(filtered) <= 1:
+                        return f"{icon} No tasks found with *{label}* priority."
+                    header_label = f"📊 *TASKS — {icon} {label} Priority*"
+                else:
+                    filtered = [rows[0]] + [r for r in rows[1:] if len(r) > 4 and owner_filter in r[4].lower()]
+                    if len(filtered) <= 1:
+                        return f"👤 No tasks found for owner matching *'{owner_filter}'*."
+                    header_label = f"📊 *TASKS — 👤 {owner_filter.title()}*"
                 display_rows = filtered
-                header_label = f"📊 *TASKS — {owner_filter.title()}*"
             else:
                 display_rows = rows
                 header_label = "📊 *TASKS*"
@@ -315,6 +355,41 @@ def handle_message(text, sender, session, state):
             session["data"]["weekly_rows"] = rows
             return "\n".join(lines)
 
+        # DONE <n> — quick mark as done with optional weekly tracker
+        elif len(cmd.split()) == 2 and cmd.split()[0] == "done" and cmd.split()[1].isdigit():
+            rows = get_all_rows()
+            if not rows:
+                return "📭 No data found in the sheet."
+            task_num  = int(cmd.split()[1])
+            data_rows = rows[1:]
+            if task_num < 1 or task_num > len(data_rows):
+                return f"❌ Invalid number. There are {len(data_rows)} tasks."
+            row       = data_rows[task_num - 1]
+            task_name = row[1] if len(row) > 1 else "?"
+            session["data"]["done_row_index"] = task_num
+            session["data"]["done_task_name"] = task_name
+            session["state"] = "done_ask_weekly"
+            return (f"✅ Mark *{task_name}* as Done?\n━━━━━━━━━━━━━━━━━━\n"
+                    "Also update Weekly Tracker?\n\n"
+                    "1️⃣ Yes — update both\n"
+                    "2️⃣ No — just Master Tasks")
+
+        # REMIND — guided flow
+        elif cmd == "remind":
+            rows = get_all_rows()
+            if not rows:
+                return "📭 No data found in the sheet."
+            data_rows = rows[1:]
+            lines = ["⏰ *SET A REMINDER*\n━━━━━━━━━━━━━━━━━━\nWhich task?\n"]
+            for i, row in enumerate(data_rows[:20], start=1):
+                task = row[1] if len(row) > 1 else "?"
+                lines.append(f"{i}. {task}")
+            if len(data_rows) > 20:
+                lines.append("\n_Showing first 20. Use search to find others._")
+            session["state"] = "remind_pick_task"
+            session["data"]["remind_rows"] = rows
+            return "\n".join(lines)
+
         else:
             return "🤖 I didn't understand that.\n\nSend *help* to see all commands."
 
@@ -385,6 +460,99 @@ def handle_message(text, sender, session, state):
                     f"📆 *Frequency:* {new_row[5]}\n"
                     f"🎯 *KPI/Goal:* {new_row[6]}")
         return "❌ Failed to add task. Please try again."
+
+    # ── DONE flow ─────────────────────────────────────────────────────────────
+    elif state == "done_ask_weekly":
+        if text not in ("1", "2"):
+            return "⚠️ Reply *1* to update both or *2* for Master Tasks only."
+        row_index = session["data"]["done_row_index"]
+        task_name = session["data"]["done_task_name"]
+        # Update Master Tasks status to Done (col 3, 1-indexed)
+        success = update_cell(row_index + 1, 3, "Done")
+        if text == "1":
+            # Also tick all 7 days in Weekly Tracker for matching task
+            weekly_rows = get_weekly_rows()
+            for wi, wr in enumerate(weekly_rows[1:], start=2):
+                if len(wr) > 1 and task_name.lower() in wr[1].lower():
+                    for col in range(3, 10):  # C to I
+                        update_weekly_cell(wi, col, "TRUE")
+                    break
+        reset_session(sender)
+        if success:
+            extra = " + Weekly Tracker updated ✅" if text == "1" else ""
+            return f"✅ *Done!*\n━━━━━━━━━━━━━━━━━━\n📝 *{task_name}*\nMarked as 🟢 Done{extra}"
+        return "❌ Update failed. Please try again."
+
+    # ── REMIND flow ───────────────────────────────────────────────────────────
+    elif state == "remind_pick_task":
+        rows = session["data"].get("remind_rows", [])
+        try:
+            task_num  = int(text)
+            data_rows = rows[1:]
+            chosen    = data_rows[task_num - 1]
+            task_name = chosen[1] if len(chosen) > 1 else "?"
+            session["data"]["remind_task_name"] = task_name
+            session["state"] = "remind_pick_date"
+            return (f"⏰ Reminder for: *{task_name}*\n━━━━━━━━━━━━━━━━━━\n"
+                    "*When?* Reply with a date:\n\n"
+                    "• *today*\n"
+                    "• *tomorrow*\n"
+                    "• *dd/mm* _(e.g. 05/05)_")
+        except (ValueError, IndexError):
+            reset_session(sender)
+            return "❌ Invalid number. Send *remind* to try again."
+
+    elif state == "remind_pick_date":
+        tz  = pytz.timezone("Asia/Kolkata")
+        now = datetime.now(tz)
+        try:
+            if cmd == "today":
+                remind_date = now.date()
+            elif cmd == "tomorrow":
+                remind_date = (now + timedelta(days=1)).date()
+            else:
+                day, month = cmd.split("/")
+                remind_date = now.replace(day=int(day), month=int(month)).date()
+            session["data"]["remind_date"] = remind_date.isoformat()
+            session["state"] = "remind_pick_time"
+            return ("⏰ What *time*?\n\n"
+                    "• *9am*, *10am*, *2pm*, *5pm*\n"
+                    "• Or type any time like *14:30*")
+        except Exception:
+            return "⚠️ Couldn't understand the date. Try *today*, *tomorrow*, or *dd/mm* like 05/05."
+
+    elif state == "remind_pick_time":
+        tz        = pytz.timezone("Asia/Kolkata")
+        task_name = session["data"]["remind_task_name"]
+        date_str  = session["data"]["remind_date"]
+        sender_num = sender  # e.g. whatsapp:+91...
+        try:
+            # Parse time
+            t = cmd.strip().lower().replace(" ", "")
+            if ":" in t:
+                h, m = int(t.split(":")[0]), int(t.split(":")[1])
+            elif t.endswith("am") or t.endswith("pm"):
+                period = t[-2:]
+                h      = int(t[:-2])
+                if period == "pm" and h != 12:
+                    h += 12
+                if period == "am" and h == 12:
+                    h = 0
+                m = 0
+            else:
+                raise ValueError("unrecognised time")
+            remind_dt = tz.localize(datetime.fromisoformat(date_str).replace(hour=h, minute=m, second=0))
+            if remind_dt <= datetime.now(tz):
+                reset_session(sender)
+                return "⚠️ That time has already passed. Send *remind* to try again."
+            task_reminders.append({"time": remind_dt, "number": sender_num, "task_name": task_name})
+            reset_session(sender)
+            formatted = remind_dt.strftime("%d %b at %I:%M %p IST")
+            return (f"⏰ *Reminder Set!*\n━━━━━━━━━━━━━━━━━━\n"
+                    f"📝 *Task:* {task_name}\n"
+                    f"🕐 *When:* {formatted}")
+        except Exception:
+            return "⚠️ Couldn't understand the time. Try *9am*, *2pm*, or *14:30*."
 
     # ── UPDATE flow ───────────────────────────────────────────────────────────
     elif state == "update_pick_row":
