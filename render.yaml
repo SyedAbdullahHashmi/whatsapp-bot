@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: whatsapp-sheet-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SPREADSHEET_ID
+        value: 1imSb1a-uq8K_XYwiru0IJYjGdssRC5QGr6kDHolQysk
+      - key: SHEET_NAME
+        value: Master Tasks
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false   # ← paste your credentials JSON here in Render dashboard
