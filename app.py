@@ -34,6 +34,10 @@ _Your Amazon task tracker, right here on WhatsApp._
 📊 *list*  _or_  *list 2*
    View all tasks, 10 per page
 
+🔎 *view <number>*
+   See full details of a task
+   _e.g. view 5_
+
 🔍 *search <keyword>*
    Filter tasks by any word
    _e.g. search inventory_
@@ -173,8 +177,38 @@ def handle_message(text, sender, session, state):
                 lines.append(f"{i}. *{task}*\n   {S_ICON.get(status.lower(),'⚪')} {status}  {P_ICON.get(priority.lower(),'')} {priority}")
             if page < total_pages:
                 lines.append(f"\n➡️ Send *list {page + 1}* for next page.")
-            lines.append("\n━━━━━━━━━━━━━━━━━━\n💬 *add* | *update* | *weekly* | *search <keyword>*")
+            lines.append("\n━━━━━━━━━━━━━━━━━━\n💬 *view <n>* for full details | *add* | *update* | *weekly* | *search <keyword>*")
             return "\n".join(lines)
+
+        # VIEW full task details
+        elif len(cmd.split()) == 2 and cmd.split()[0] == "view" and cmd.split()[1].isdigit():
+            rows = get_all_rows()
+            if not rows:
+                return "\U0001f4ed No data found in the sheet."
+            task_num  = int(cmd.split()[1])
+            data_rows = rows[1:]
+            if task_num < 1 or task_num > len(data_rows):
+                return f"\u274c Invalid number. There are {len(data_rows)} tasks. Send *list* to browse."
+            row      = data_rows[task_num - 1]
+            cat      = row[0] if len(row) > 0 else "\u2014"
+            task     = row[1] if len(row) > 1 else "\u2014"
+            status   = row[2] if len(row) > 2 else "\u2014"
+            priority = row[3] if len(row) > 3 else "\u2014"
+            owner    = row[4] if len(row) > 4 else "\u2014"
+            freq     = row[5] if len(row) > 5 else "\u2014"
+            kpi      = row[6] if len(row) > 6 else "\u2014"
+            s_icon   = S_ICON.get(status.lower(), "\u26aa")
+            p_icon   = P_ICON.get(priority.lower(), "")
+            return (f"\U0001f4cb *Task #{task_num}*\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                    f"\U0001f4dd *Task:* {task}\n"
+                    f"\U0001f4c1 *Category:* {cat}\n"
+                    f"\U0001f504 *Status:* {s_icon} {status}\n"
+                    f"\u26a1 *Priority:* {p_icon} {priority}\n"
+                    f"\U0001f464 *Owner:* {owner}\n"
+                    f"\U0001f4c6 *Frequency:* {freq}\n"
+                    f"\U0001f3af *KPI / Goal:* {kpi}\n"
+                    f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                    f"\U0001f4ac Send *update* to edit this task")
 
         # SEARCH
         elif cmd.startswith("search "):
