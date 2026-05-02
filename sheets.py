@@ -85,3 +85,38 @@ def find_row_by_task(task_name: str):
         if len(row) > 1 and task_name.lower() in row[1].lower():
             return i
     return None
+
+
+def get_weekly_rows():
+    """Fetch all rows from the Weekly Tracker tab."""
+    try:
+        service = _get_service()
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=SPREADSHEET_ID, range="Weekly Tracker!A:K")
+            .execute()
+        )
+        return result.get("values", [])
+    except Exception as e:
+        print(f"[sheets] get_weekly_rows error: {e}")
+        return []
+
+
+def update_weekly_cell(row: int, col: int, value: str):
+    """Update a single cell in the Weekly Tracker tab."""
+    try:
+        service = _get_service()
+        col_letter = chr(ord("A") + col - 1)
+        cell_range = f"Weekly Tracker!{col_letter}{row}"
+        body = {"values": [[value]]}
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=cell_range,
+            valueInputOption="USER_ENTERED",
+            body=body,
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"[sheets] update_weekly_cell error: {e}")
+        return False
