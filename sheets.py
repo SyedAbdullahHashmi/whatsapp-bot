@@ -120,3 +120,30 @@ def update_weekly_cell(row: int, col: int, value: str):
     except Exception as e:
         print(f"[sheets] update_weekly_cell error: {e}")
         return False
+
+
+def reset_weekly_tracker():
+    """Reset all Mon-Sun checkboxes (cols C-I) to FALSE in Weekly Tracker."""
+    try:
+        service   = _get_service()
+        rows      = get_weekly_rows()
+        data_rows = rows[1:]  # skip header
+        if not data_rows:
+            return True
+        # Build a batch of FALSE values for cols C-I (7 days) for every data row
+        batch_data = []
+        for i, _ in enumerate(data_rows, start=2):  # row 2 = first data row
+            for col_offset in range(7):  # C=3 to I=9
+                col_letter = chr(ord("A") + 2 + col_offset)
+                batch_data.append({
+                    "range": f"Weekly Tracker!{col_letter}{i}",
+                    "values": [["FALSE"]]
+                })
+        body = {"valueInputOption": "USER_ENTERED", "data": batch_data}
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID, body=body
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"[sheets] reset_weekly_tracker error: {e}")
+        return False

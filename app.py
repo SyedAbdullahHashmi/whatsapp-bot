@@ -2,7 +2,7 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from sheets import (get_all_rows, append_row, update_cell,
-                    get_weekly_rows, update_weekly_cell)
+                    get_weekly_rows, update_weekly_cell, reset_weekly_tracker)
 from apscheduler.schedulers.background import BackgroundScheduler
 import os, pytz
 
@@ -34,6 +34,9 @@ _Your Amazon task tracker, right here on WhatsApp._
 📊 *list*  _or_  *list 2*
    View all tasks, 10 per page
 
+👤 *list haris*  _or_  *list abdullah*
+   Filter tasks by owner
+
 🔎 *view <number>*
    See full details of a task
    _e.g. view 5_
@@ -64,6 +67,9 @@ _Your Amazon task tracker, right here on WhatsApp._
 ━━━━━━━━━━━━━━━━━━
 Every morning at *9:00 AM IST* you'll
 get a summary of all pending tasks.
+
+🔄 Every *Monday 8:00 AM IST* the Weekly
+Tracker checkboxes are auto-reset.
 
 ━━━━━━━━━━━━━━━━━━
 💡 *QUICK REFERENCE*
@@ -113,9 +119,19 @@ def daily_summary():
     send_reminder("\n".join(lines))
 
 
+def weekly_reset():
+    """Every Monday at 8:00 AM IST — reset all Weekly Tracker checkboxes."""
+    success = reset_weekly_tracker()
+    if success:
+        send_reminder("🔄 *Weekly Tracker Reset!*\n━━━━━━━━━━━━━━━━━━\n📅 All checkboxes have been cleared for the new week.\n\nLet's crush it this week! 💪")
+    else:
+        print("[weekly_reset] Failed to reset tracker")
+
+
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 scheduler.add_job(daily_summary, "cron", hour=9, minute=0)
+scheduler.add_job(weekly_reset, "cron", day_of_week="mon", hour=8, minute=0)
 scheduler.start()
 
 
@@ -161,23 +177,45 @@ def handle_message(text, sender, session, state):
         if cmd in ("hi", "hello", "hey", "start", "help"):
             return HELP_TEXT
 
-        # LIST (renamed from show)
-        elif cmd == "list" or (len(cmd.split()) == 2 and cmd.split()[0] == "list" and cmd.split()[1].isdigit()):
+        # LIST — supports: list, list 2, list haris, list abdullah
+        elif cmd == "list" or (len(cmd.split()) >= 2 and cmd.split()[0] == "list"):
             rows = get_all_rows()
             if not rows:
                 return "📭 No data found in the sheet."
-            parts = cmd.split()
-            page  = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-            slice_, page, total_pages, start = paginate_tasks(rows, page)
-            lines = [f"📊 *TASKS — Page {page} of {total_pages}*\n━━━━━━━━━━━━━━━━━━"]
+            parts        = cmd.split()
+            owner_filter = None
+            page         = 1
+            if len(parts) == 2:
+                if parts[1].isdigit():
+                    page = int(parts[1])
+                else:
+                    owner_filter = parts[1].lower()  # e.g. "haris" or "abdullah"
+            elif len(parts) == 3 and parts[2].isdigit():
+                owner_filter = parts[1].lower()
+                page         = int(parts[2])
+
+            # Apply owner filter if given
+            if owner_filter:
+                filtered = [rows[0]] + [r for r in rows[1:] if len(r) > 4 and owner_filter in r[4].lower()]
+                if len(filtered) <= 1:
+                    return f"👤 No tasks found for owner matching *'{owner_filter}'*."
+                display_rows = filtered
+                header_label = f"📊 *TASKS — {owner_filter.title()}*"
+            else:
+                display_rows = rows
+                header_label = "📊 *TASKS*"
+
+            slice_, page, total_pages, start = paginate_tasks(display_rows, page)
+            lines = [f"{header_label} — Page {page} of {total_pages}\n━━━━━━━━━━━━━━━━━━"]
             for i, row in enumerate(slice_, start=start + 1):
                 task     = row[1] if len(row) > 1 else "?"
                 status   = row[2] if len(row) > 2 else "?"
                 priority = row[3] if len(row) > 3 else "?"
                 lines.append(f"{i}. *{task}*\n   {S_ICON.get(status.lower(),'⚪')} {status}  {P_ICON.get(priority.lower(),'')} {priority}")
             if page < total_pages:
-                lines.append(f"\n➡️ Send *list {page + 1}* for next page.")
-            lines.append("\n━━━━━━━━━━━━━━━━━━\n💬 *view <n>* for full details | *add* | *update* | *weekly* | *search <keyword>*")
+                next_cmd = f"list {owner_filter} {page+1}" if owner_filter else f"list {page+1}"
+                lines.append(f"\n➡️ Send *{next_cmd}* for next page.")
+            lines.append("\n━━━━━━━━━━━━━━━━━━\n💬 *view <n>* | *add* | *update* | *weekly* | *search <keyword>*")
             return "\n".join(lines)
 
         # VIEW full task details
