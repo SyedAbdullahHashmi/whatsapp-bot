@@ -52,17 +52,28 @@ def handle_message(text, sender, session, state):
         elif cmd == "help":
             return HELP_TEXT
 
-        elif cmd == "show":
+        elif cmd == "show" or (len(cmd.split()) == 2 and cmd.split()[0] == "show" and cmd.split()[1].isdigit()):
             rows = get_all_rows()
             if not rows:
-                return "📭 No data found in the sheet."
-            lines = ["📊 *Current Tasks:*\n"]
-            for i, row in enumerate(rows[1:], start=1):  # skip header
+                return "No data found in the sheet."
+            data_rows = rows[1:]
+            parts = cmd.split()
+            page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            page_size = 10
+            total = len(data_rows)
+            total_pages = (total + page_size - 1) // page_size
+            page = max(1, min(page, total_pages))
+            start = (page - 1) * page_size
+            end = start + page_size
+            lines = [f"Tasks (Page {page}/{total_pages}):\n"]
+            for i, row in enumerate(data_rows[start:end], start=start + 1):
                 task = row[1] if len(row) > 1 else "?"
                 status = row[2] if len(row) > 2 else "?"
                 priority = row[3] if len(row) > 3 else "?"
-                lines.append(f"{i}. *{task}*\n   Status: {status} | Priority: {priority}")
-            lines.append("\nReply *add* or *update* to make changes.")
+                lines.append(f"{i}. {task} - {status} | {priority}")
+            if page < total_pages:
+                lines.append(f"\nSend 'show {page + 1}' for next page.")
+            lines.append("\nSend 'add' or 'update' to make changes.")
             return "\n".join(lines)
 
         elif cmd == "add":
